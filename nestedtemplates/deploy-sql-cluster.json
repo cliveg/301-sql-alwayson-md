@@ -1,4 +1,4 @@
-﻿{
+{
     "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
     "contentVersion": "1.0.0.0",
     "parameters": {
@@ -104,6 +104,12 @@
         },
         "_artifactsLocationSasToken": {
             "type": "string"
+        },
+        "sqlLBIPAddress": {
+          "type": "string"
+        },      
+        "sqlCIPAddress": {
+          "type": "string"
         }
     },
     "variables": {
@@ -124,7 +130,18 @@
         "agListenerName": "[concat(variables('vmNamePrefix'),'agl')]",
         "agEpName": "[concat(variables('vmNamePrefix'),'ha')]",
         "faultDomainCount": "[length(take(padLeft('',parameters('vmCount'),'x'),3))]",
-        "updateDomainCount": "[length(take(padLeft('',parameters('vmCount'),'x'),5))]"
+        "updateDomainCount": "[length(take(padLeft('',parameters('vmCount'),'x'),5))]",
+    
+        "sqlLBName": "[concat(variables('vmNamePrefix'),'ilb')]",
+        "sqllbID": "[resourceId('Microsoft.Network/loadBalancers',variables('sqlLBName'))]",
+        "lbFE1": "[concat(variables('vmNamePrefix'),'ilbfe1')]",
+        "lbBE": "[concat(variables('vmNamePrefix'),'ilbbe')]",
+        "sqlLBID": "[resourceId('Microsoft.Network/loadBalancers',variables('sqlLBName'))]",
+        "sqlLBFEConfigID1": "[concat(variables('sqllbID'),'/frontendIPConfigurations/',variables('lbFE1'))]",
+        "sqlLBBEAddressPoolID": "[concat(variables('sqllbID'),'/backendAddressPools/',variables('lbBE'))]",
+        "agProbe1": "[concat(variables('vmNamePrefix'),'ilbp1')]",
+        "sqlLBProbeID1": "[concat(variables('sqllbID'),'/probes/',variables('agProbe1'))]"
+    
     },
     "resources": [
         {
@@ -148,6 +165,68 @@
             },
             "kind": "Storage"
         },
+
+    
+    
+        {
+            "apiVersion": "2015-06-15",
+            "name": "[variables('sqlLBName')]",
+            "type": "Microsoft.Network/loadBalancers",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [],
+            "properties": {
+              "frontendIPConfigurations": [
+                {
+                  "name": "[variables('lbFE1')]",
+                  "properties": {
+                    "privateIPAllocationMethod": "Static",
+                    "privateIPAddress": "[parameters('sqlLBIPAddress')]",
+                    "subnet": {
+                      "id": "[parameters('nicSubnetUri')]"
+                    }
+                  }
+                }
+              ],
+              "backendAddressPools": [
+                {
+                  "name": "[variables('lbBE')]"
+                }
+              ],
+              "loadBalancingRules": [
+                {
+                  "name": "[variables('agListenerName')]",
+                  "properties": {
+                    "frontendIPConfiguration": {
+                      "id": "[variables('sqlLBFEConfigID1')]"
+                    },
+                    "backendAddressPool": {
+                      "id": "[variables('sqlLBBEAddressPoolID')]"
+                    },
+                    "probe": {
+                      "id": "[variables('sqlLBProbeID1')]"
+                    },
+                    "protocol": "Tcp",
+                    "frontendPort": 1433,
+                    "backendPort": 1433,
+                    "enableFloatingIP": true
+                  }
+                }
+              ],
+              "probes": [
+                {
+                  "name": "[variables('agProbe1')]",
+                  "properties": {
+                    "protocol": "Tcp",
+                    "port": 59999,
+                    "intervalInSeconds": 5,
+                    "numberOfProbes": 2
+                  }
+                }
+              ]
+            }
+        },    
+
+
         {
             "name": "[concat(variables('vmNamePrefix'), copyindex(), '-nic')]",
             "type": "Microsoft.Network/networkInterfaces",
@@ -167,24 +246,6 @@
                                 "id": "[parameters('nicSubnetUri')]"
                             },
                             "primary": true
-                        }
-                    },
-                    {
-                        "name": "ipconfig2",
-                        "properties": {
-                            "privateIPAllocationMethod": "Dynamic",
-                            "subnet": {
-                                "id": "[parameters('nicSubnetUri')]"
-                            }
-                        }
-                    },
-                    {
-                        "name": "ipconfig3",
-                        "properties": {
-                            "privateIPAllocationMethod": "Dynamic",
-                            "subnet": {
-                                "id": "[parameters('nicSubnetUri')]"
-                            }
                         }
                     }
                 ]
@@ -239,103 +300,10 @@
         {
             "type": "Microsoft.Resources/deployments",
             "apiVersion": "2015-01-01",
-            "name": "[concat(variables('vmNamePrefix'),'0-clusterIp')]",
-            "dependsOn": [
-                "nicLoop"
-            ],
-            "properties": {
-                "mode": "Incremental",
-                "templateLink": {
-                    "uri": "[variables('ipLoopTemplateURL')]"
-                },
-                "parameters": {
-                    "ipConfig": {
-                        "value": "[reference(concat(variables('vmNamePrefix'), '0-nic')).ipConfigurations[1].properties.privateIPAddress]"
-                    }
-                }
-            }
-        },
-        {
-            "type": "Microsoft.Resources/deployments",
-            "apiVersion": "2015-01-01",
-            "copy": {
-                "name": "clusterIpLoop",
-                "count": "[sub(parameters('vmCount'),1)]"
-            },
-            "name": "[concat(variables('vmNamePrefix'),copyIndex(1),'-clusterIp')]",
-            "dependsOn": [
-                "nicLoop",
-                "[concat(variables('vmNamePrefix'),'0-clusterIp')]"
-            ],
-            "properties": {
-                "mode": "Incremental",
-                "templateLink": {
-                    "uri": "[variables('ipLoopTemplateURL')]"
-                },
-                "parameters": {
-                    "ipConfig": {
-                        "value": "[reference(concat(variables('vmNamePrefix'), copyIndex(1), '-nic')).ipConfigurations[1].properties.privateIPAddress]"
-                    },
-                    "ipAddresses": {
-                        "value": "[reference(concat(variables('vmNamePrefix'),copyIndex(),'-clusterIp')).outputs.result.value]"
-                    }
-                }
-            }
-        },
-        {
-            "type": "Microsoft.Resources/deployments",
-            "apiVersion": "2015-01-01",
-            "name": "[concat(variables('vmNamePrefix'),'0-agListenerIp')]",
-            "dependsOn": [
-                "nicLoop"
-            ],
-            "properties": {
-                "mode": "Incremental",
-                "templateLink": {
-                    "uri": "[variables('ipLoopTemplateURL')]"
-                },
-                "parameters": {
-                    "ipConfig": {
-                        "value": "[reference(concat(variables('vmNamePrefix'), '0-nic')).ipConfigurations[2].properties.privateIPAddress]"
-                    }
-                }
-            }
-        },
-        {
-            "type": "Microsoft.Resources/deployments",
-            "apiVersion": "2015-01-01",
-            "copy": {
-                "name": "agListenerIpLoop",
-                "count": "[sub(parameters('vmCount'),1)]"
-            },
-            "name": "[concat(variables('vmNamePrefix'),copyIndex(1),'-agListenerIp')]",
-            "dependsOn": [
-                "nicLoop",
-                "[concat(variables('vmNamePrefix'),'0-agListenerIp')]"
-            ],
-            "properties": {
-                "mode": "Incremental",
-                "templateLink": {
-                    "uri": "[variables('ipLoopTemplateURL')]"
-                },
-                "parameters": {
-                    "ipConfig": {
-                        "value": "[reference(concat(variables('vmNamePrefix'), copyIndex(1), '-nic')).ipConfigurations[2].properties.privateIPAddress]"
-                    },
-                    "ipAddresses": {
-                        "value": "[reference(concat(variables('vmNamePrefix'),copyIndex(),'-agListenerIp')).outputs.result.value]"
-                    }
-                }
-            }
-        },
-        {
-            "type": "Microsoft.Resources/deployments",
-            "apiVersion": "2015-01-01",
             "name": "[concat(variables('vmNamePrefix'),'setStaticIp')]",
             "dependsOn": [
-                "primaryIpLoop",
-                "clusterIpLoop",
-                "agListenerIpLoop"
+                "primaryIpLoop"
+
             ],
             "properties": {
                 "mode": "Incremental",
@@ -351,12 +319,6 @@
                     },
                     "ipAddresses1": {
                         "value": "[reference(concat(variables('vmNamePrefix'),sub(parameters('vmCount'),1),'-primaryIp')).outputs.result.value]"
-                    },
-                    "ipAddresses2": {
-                        "value": "[reference(concat(variables('vmNamePrefix'),sub(parameters('vmCount'),1),'-clusterIp')).outputs.result.value]"
-                    },
-                    "ipAddresses3": {
-                        "value": "[reference(concat(variables('vmNamePrefix'),sub(parameters('vmCount'),1),'-agListenerIp')).outputs.result.value]"
                     },
                     "nicSubnetUri": {
                         "value": "[parameters('nicSubnetUri')]"
@@ -474,8 +436,6 @@
             "dependsOn": [
                 "virtualMachineLoop",
                 "virtualMachineExtensionLoop",
-                "clusterIpLoop",
-                "agListenerIpLoop",
                 "[resourceId('Microsoft.Storage/storageAccounts', variables('witnessStorageName'))]"
             ],
             "properties": {
@@ -486,32 +446,32 @@
                 "settings": {
                     "modulesUrl": "[variables('sqlConfigModulesURL')]",
                     "configurationFunction": "[variables('sqlConfigFunction')]",
-                    "properties": {
-                        "domainName": "[parameters('domainName')]",
-                        "clusterName": "[variables('clusterName')]",
-                        "vmNamePrefix": "[variables('vmNamePrefix')]",
-                        "sqlAlwaysOnAvailabilityGroupName": "[variables('agName')]",
-                        "sqlAlwaysOnAvailabilityGroupListenerName": "[variables('agListenerName')]",
-                        "sqlAlwaysOnEndpointName": "[variables('agEpName')]",
-                        "vmCount": "[parameters('vmCount')]",
-                        "clusterIpAddresses": "[reference(concat(variables('vmNamePrefix'),sub(parameters('vmCount'),1),'-clusterIp')).outputs.result.value]",
-                        "agListenerIpAddresses": "[reference(concat(variables('vmNamePrefix'),sub(parameters('vmCount'),1),'-agListenerIp')).outputs.result.value]",
-                        "numberOfDisks": "[parameters('vmDiskCount')]",
-                        "workloadType": "[parameters('workloadType')]",
-                        "witnessStorageName": "[variables('witnessStorageName')]",
-                        "witnessStorageKey": {
-                            "userName": "PLACEHOLDER-DO-NOT-USE",
-                            "password": "PrivateSettingsRef:witnessStorageKey"
-                        },
-                        "adminCreds": {
-                            "userName": "[parameters('adminUserName')]",
-                            "password": "PrivateSettingsRef:adminPassword"
-                        },
-                        "sqlServiceCreds": {
-                            "userName": "[parameters('sqlServiceAccount')]",
-                            "password": "PrivateSettingsRef:sqlServicePassword"
-                        }
+                  "properties": {
+                    "domainName": "[parameters('domainName')]",
+                    "clusterName": "[variables('clusterName')]",
+                    "vmNamePrefix": "[variables('vmNamePrefix')]",
+                    "sqlAlwaysOnAvailabilityGroupName": "[variables('agName')]",
+                    "sqlAlwaysOnAvailabilityGroupListenerName": "[variables('agListenerName')]",
+                    "sqlAlwaysOnEndpointName": "[variables('agEpName')]",
+                    "vmCount": "[parameters('vmCount')]",
+                    "clusterIpAddresses": "[parameters('sqlCIPAddress')]",
+                    "agListenerIpAddresses": "[parameters('sqlLBIPAddress')]",
+                    "numberOfDisks": "[parameters('vmDiskCount')]",
+                    "workloadType": "[parameters('workloadType')]",
+                    "witnessStorageName": "[variables('witnessStorageName')]",
+                    "witnessStorageKey": {
+                      "userName": "PLACEHOLDER-DO-NOT-USE",
+                      "password": "PrivateSettingsRef:witnessStorageKey"
+                    },
+                    "adminCreds": {
+                      "userName": "[parameters('adminUserName')]",
+                      "password": "PrivateSettingsRef:adminPassword"
+                    },
+                    "sqlServiceCreds": {
+                      "userName": "[parameters('sqlServiceAccount')]",
+                      "password": "PrivateSettingsRef:sqlServicePassword"
                     }
+                  }
                 },
                 "protectedSettings": {
                     "items": {
